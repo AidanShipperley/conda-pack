@@ -11,9 +11,8 @@ import warnings
 from contextlib import contextmanager
 from datetime import datetime
 from fnmatch import fnmatch
+from importlib.resources import files as resource_files
 from pathlib import Path
-
-import pkg_resources
 
 from ._progress import progressbar
 from .compat import default_encoding, find_py_source, is_32bit, on_win
@@ -1089,6 +1088,9 @@ _parcel_package_template = """\
 
 _conda_unpack_template = """\
 {shebang}
+# Import progress bar to display unpack progress
+from conda_unpack_progress import progressbar
+
 {prefixes_py}
 
 _prefix_records = [
@@ -1105,6 +1107,9 @@ if __name__ == '__main__':
     parser.add_argument('--version',
                         action='store_true',
                         help='Show version then exit')
+    parser.add_argument('--verbose', '-v',
+                        action='store_true',
+                        help='Show progress bar during unpacking')
     args = parser.parse_args()
     # Manually handle version printing to output to stdout in python < 3.4
     if args.version:
@@ -1112,11 +1117,21 @@ if __name__ == '__main__':
     else:
         script_dir = os.path.dirname(__file__)
         new_prefix = os.path.abspath(os.path.dirname(script_dir))
-        for path, placeholder, mode in _prefix_records:
-            new_path = os.path.join(new_prefix, path)
-            if on_win:
-                new_path = new_path.replace('\\\\', '/')
-            update_prefix(new_path, new_prefix, placeholder, mode=mode)
+
+        if args.verbose and _prefix_records:
+            print("Unpacking environment...")
+            with progressbar(_prefix_records, enabled=True) as records:
+                for path, placeholder, mode in records:
+                    new_path = os.path.join(new_prefix, path)
+                    if on_win:
+                        new_path = new_path.replace('\\\\', '/')
+                    update_prefix(new_path, new_prefix, placeholder, mode=mode)
+        else:
+            for path, placeholder, mode in _prefix_records:
+                new_path = os.path.join(new_prefix, path)
+                if on_win:
+                    new_path = new_path.replace('\\\\', '/')
+                update_prefix(new_path, new_prefix, placeholder, mode=mode)
 """
 
 
@@ -1270,6 +1285,12 @@ class Packer:
                 shebang = "#!/usr/bin/env python"
                 python_pattern = re.compile(BIN_DIR + "/python")
 
+            # Write the progress module alongside conda-unpack
+            progress_module_path = os.path.join(BIN_DIR, "conda_unpack_progress.py")
+            with open(os.path.join(_current_dir, "_progress.py")) as fil:
+                progress_content = fil.read()
+            self._write_text_file(progress_module_path, progress_content, False)
+
             # We skip prefix rewriting in python executables (if needed)
             # to avoid editing a running file.
             prefix_records = ",\n".join(
@@ -1291,7 +1312,7 @@ class Packer:
 
             if on_win:
                 exe = "cli-32.exe" if is_32bit else "cli-64.exe"
-                cli_exe = pkg_resources.resource_filename("setuptools", exe)
+                cli_exe = str(resource_files("setuptools") / exe)
                 self.archive.add(cli_exe, os.path.join(BIN_DIR, "conda-unpack.exe"))
 
         # mksquashfs has no (fast) iterative mode, only batch mode
